@@ -1,0 +1,242 @@
+{
+  "item_41": {
+    "title": "Billy Madison (1995)",
+    "item_id": 41,
+    "clean_baseline": {
+      "avg_target_predicted_rating": 3.4051785469055176,
+      "target_hit_ratio_at_k": 0.0,
+      "target_avg_rank_in_top_k": 11.0
+    },
+    "attacks": {
+      "random": {
+        "3%": {
+          "num_fake_profiles": 28,
+          "attacked_predicted_rating": 3.411770820617676,
+          "prediction_shift": 0.006592273712158203,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        },
+        "5%": {
+          "num_fake_profiles": 47,
+          "attacked_predicted_rating": 3.446469783782959,
+          "prediction_shift": 0.041291236877441406,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        },
+        "8%": {
+          "num_fake_profiles": 75,
+          "attacked_predicted_rating": 3.4323904514312744,
+          "prediction_shift": 0.027211904525756836,
+          "attacked_hit_ratio_at_10": 0.008620689655172414,
+          "hit_ratio_shift": 0.008620689655172414
+        }
+      },
+      "average": {
+        "3%": {
+          "num_fake_profiles": 28,
+          "attacked_predicted_rating": 3.4290387630462646,
+          "prediction_shift": 0.02386021614074707,
+          "attacked_hit_ratio_at_10": 0.008620689655172414,
+          "hit_ratio_shift": 0.008620689655172414
+        },
+        "5%": {
+          "num_fake_profiles": 47,
+          "attacked_predicted_rating": 3.4356114864349365,
+          "prediction_shift": 0.030432939529418945,
+          "attacked_hit_ratio_at_10": 0.008620689655172414,
+          "hit_ratio_shift": 0.008620689655172414
+        },
+        "8%": {
+          "num_fake_profiles": 75,
+          "attacked_predicted_rating": 3.4349777698516846,
+          "prediction_shift": 0.029799222946166992,
+          "attacked_hit_ratio_at_10": 0.008620689655172414,
+          "hit_ratio_shift": 0.008620689655172414
+        }
+      },
+      "bandwagon": {
+        "3%": {
+          "num_fake_profiles": 28,
+          "attacked_predicted_rating": 3.4500107765197754,
+          "prediction_shift": 0.04483222961425781,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        },
+        "5%": {
+          "num_fake_profiles": 47,
+          "attacked_predicted_rating": 3.4869279861450195,
+          "prediction_shift": 0.08174943923950195,
+          "attacked_hit_ratio_at_10": 0.017241379310344827,
+          "hit_ratio_shift": 0.017241379310344827
+        },
+        "8%": {
+          "num_fake_profiles": 75,
+          "attacked_predicted_rating": 3.5651800632476807,
+          "prediction_shift": 0.16000151634216309,
+          "attacked_hit_ratio_at_10": 0.02586206896551724,
+          "hit_ratio_shift": 0.02586206896551724
+        }
+      }
+    }
+  },
+  "item_78": {
+    "title": "Free Willy (1993)",
+    "item_id": 78,
+    "clean_baseline": {
+      "avg_target_predicted_rating": 3.2283506393432617,
+      "target_hit_ratio_at_k": 0.0,
+      "target_avg_rank_in_top_k": 11.0
+    },
+    "attacks": {
+      "random": {
+        "3%": {
+          "num_fake_profiles": 28,
+          "attacked_predicted_rating": 3.23494291305542,
+          "prediction_shift": 0.006592273712158203,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        },
+        "5%": {
+          "num_fake_profiles": 47,
+          "attacked_predicted_rating": 3.289367437362671,
+          "prediction_shift": 0.06101679801940918,
+          "attacked_hit_ratio_at_10": 0.008620689655172414,
+          "hit_ratio_shift": 0.008620689655172414
+        },
+        "8%": {
+          "num_fake_profiles": 75,
+          "attacked_predicted_rating": 3.256592035293579,
+          "prediction_shift": 0.028241395950317383,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        }
+      },
+      "average": {
+        "3%": {
+          "num_fake_profiles": 28,
+          "attacked_predicted_rating": 3.2545106410980225,
+          "prediction_shift": 0.026160001754760742,
+          "attacked_hit_ratio_at_10": 0.008620689655172414,
+          "hit_ratio_shift": 0.008620689655172414
+        },
+        "5%": {
+          "num_fake_profiles": 47,
+          "attacked_predicted_rating": 3.2704052925109863,
+          "prediction_shift": 0.04205465316772461,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        },
+        "8%": {
+          "num_fake_profiles": 75,
+          "attacked_predicted_rating": 3.2546799182891846,
+          "prediction_shift": 0.02632927894592285,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        }
+      },
+      "bandwagon": {
+        "3%": {
+          "num_fake_profiles": 28,
+          "attacked_predicted_rating": 3.293003797531128,
+          "prediction_shift": 0.06465315818786621,
+          "attacked_hit_ratio_at_10": 0.008620689655172414,
+          "hit_ratio_shift": 0.008620689655172414
+        },
+        "5%": {
+          "num_fake_profiles": 47,
+          "attacked_predicted_rating": 3.335615396499634,
+          "prediction_shift": 0.10726475715637207,
+          "attacked_hit_ratio_at_10": 0.008620689655172414,
+          "hit_ratio_shift": 0.008620689655172414
+        },
+        "8%": {
+          "num_fake_profiles": 75,
+          "attacked_predicted_rating": 3.418651819229126,
+          "prediction_shift": 0.19030117988586426,
+          "attacked_hit_ratio_at_10": 0.02586206896551724,
+          "hit_ratio_shift": 0.02586206896551724
+        }
+      }
+    }
+  },
+  "item_16": {
+    "title": "French Twist (Gazon maudit) (1995)",
+    "item_id": 16,
+    "clean_baseline": {
+      "avg_target_predicted_rating": 3.5210888385772705,
+      "target_hit_ratio_at_k": 0.0,
+      "target_avg_rank_in_top_k": 11.0
+    },
+    "attacks": {
+      "random": {
+        "3%": {
+          "num_fake_profiles": 28,
+          "attacked_predicted_rating": 3.527569532394409,
+          "prediction_shift": 0.006480693817138672,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        },
+        "5%": {
+          "num_fake_profiles": 47,
+          "attacked_predicted_rating": 3.5403616428375244,
+          "prediction_shift": 0.019272804260253906,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        },
+        "8%": {
+          "num_fake_profiles": 75,
+          "attacked_predicted_rating": 3.5310726165771484,
+          "prediction_shift": 0.00998377799987793,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        }
+      },
+      "average": {
+        "3%": {
+          "num_fake_profiles": 28,
+          "attacked_predicted_rating": 3.5322141647338867,
+          "prediction_shift": 0.011125326156616211,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        },
+        "5%": {
+          "num_fake_profiles": 47,
+          "attacked_predicted_rating": 3.540611743927002,
+          "prediction_shift": 0.019522905349731445,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        },
+        "8%": {
+          "num_fake_profiles": 75,
+          "attacked_predicted_rating": 3.55812931060791,
+          "prediction_shift": 0.03704047203063965,
+          "attacked_hit_ratio_at_10": 0.00847457627118644,
+          "hit_ratio_shift": 0.00847457627118644
+        }
+      },
+      "bandwagon": {
+        "3%": {
+          "num_fake_profiles": 28,
+          "attacked_predicted_rating": 3.5847535133361816,
+          "prediction_shift": 0.06366467475891113,
+          "attacked_hit_ratio_at_10": 0.01694915254237288,
+          "hit_ratio_shift": 0.01694915254237288
+        },
+        "5%": {
+          "num_fake_profiles": 47,
+          "attacked_predicted_rating": 3.6086177825927734,
+          "prediction_shift": 0.08752894401550293,
+          "attacked_hit_ratio_at_10": 0.00847457627118644,
+          "hit_ratio_shift": 0.00847457627118644
+        },
+        "8%": {
+          "num_fake_profiles": 75,
+          "attacked_predicted_rating": 3.6813745498657227,
+          "prediction_shift": 0.16028571128845215,
+          "attacked_hit_ratio_at_10": 0.0,
+          "hit_ratio_shift": 0.0
+        }
+      }
+    }
+  }
+}
