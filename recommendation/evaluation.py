@@ -1,0 +1,116 @@
+import numpy as np
+import pandas as pd
+from typing import Dict, List, Tuple
+from recommendation.recommender import UserBasedCF
+
+
+def evaluate_rating_prediction(recommender: UserBasedCF, test_df: pd.DataFrame) -> Dict[str, float]:
+    """
+    Evaluate RMSE and MAE on held-out test ratings.
+    """
+    errors = []
+    abs_errors = []
+
+    # Cache predicted ratings per user to avoid recomputation
+    cached_preds = {}
+
+    for row in test_df.itertuples():
+        u_idx = int(row.user_id) - 1
+        i_idx = int(row.item_id) - 1
+        actual = float(row.rating)
+
+        if u_idx not in cached_preds:
+            cached_preds[u_idx] = recommender.predict_user_ratings(u_idx)
+
+        predicted = float(cached_preds[u_idx][i_idx])
+        diff = actual - predicted
+        errors.append(diff ** 2)
+        abs_errors.append(abs(diff))
+
+    rmse = float(np.sqrt(np.mean(errors)))
+    mae = float(np.mean(abs_errors))
+    return {"rmse": rmse, "mae": mae}
+
+
+def evaluate_top_k_recommendations(
+    recommender: UserBasedCF,
+    test_df: pd.DataFrame,
+    k: int = 10,
+    rating_threshold: float = 3.5,
+    max_eval_users: int = 200
+) -> Dict[str, float]:
+    """
+    Evaluate ranking metrics: Precision@K, Recall@K, and Hit Rate@K.
+    An item in the test set is considered relevant if its rating >= rating_threshold.
+    """
+    precisions = []
+    recalls = []
+    hits = []
+
+    user_groups = test_df.groupby("user_id")
+    eval_count = 0
+
+    for user_id, group in user_groups:
+        u_idx = int(user_id) - 1
+        # Ground-truth relevant items in test set
+        relevant_items = set(group[group["rating"] >= rating_threshold]["item_id"] - 1)
+        if len(relevant_items) == 0:
+            continue
+
+        recs = recommender.recommend_top_k(u_idx, k=k, filter_already_rated=True)
+        recommended_items = set([item_idx for item_idx, _ in recs])
+
+        n_rel_and_rec = len(relevant_items.intersection(recommended_items))
+
+        precisions.append(n_rel_and_rec / k)
+        recalls.append(n_rel_and_rec / len(relevant_items))
+        hits.append(1.0 if n_rel_and_rec > 0 else 0.0)
+
+        eval_count += 1
+        if max_eval_users is not None and eval_count >= max_eval_users:
+            break
+
+    return {
+        f"precision@{k}": float(np.mean(precisions)) if precisions else 0.0,
+        f"recall@{k}": float(np.mean(recalls)) if recalls else 0.0,
+        f"hit_rate@{k}": float(np.mean(hits)) if hits else 0.0
+    }
+
+
+def evaluate_target_item_impact(
+    recommender: UserBasedCF,
+    target_item_idx: int,
+    eval_user_indices: List[int],
+    k: int = 10
+) -> Dict[str, float]:
+    """
+    Measure the target item's visibility across genuine users:
+    - Average predicted rating for the target item.
+    - Hit Ratio @ K (fraction of users whose top-k recommendations include target item).
+    - Average rank of target item when recommended.
+    """
+    predicted_ratings = []
+    hits_in_top_k = 0
+    ranks = []
+
+    for u_idx in eval_user_indices:
+        preds = recommender.predict_user_ratings(u_idx)
+        predicted_ratings.append(preds[target_item_idx])
+
+        # Check top-k recommendations (ignoring items already rated in train set)
+        recs = recommender.recommend_top_k(u_idx, k=k, filter_already_rated=True)
+        rec_item_ids = [item_idx for item_idx, _ in recs]
+
+        if target_item_idx in rec_item_ids:
+            hits_in_top_k += 1
+            ranks.append(rec_item_ids.index(target_item_idx) + 1)
+
+    avg_predicted_rating = float(np.mean(predicted_ratings))
+    hit_ratio = float(hits_in_top_k / len(eval_user_indices)) if eval_user_indices else 0.0
+    avg_rank = float(np.mean(ranks)) if ranks else float(k + 1)
+
+    return {
+        "avg_target_predicted_rating": avg_predicted_rating,
+        "target_hit_ratio_at_k": hit_ratio,
+        "target_avg_rank_in_top_k": avg_rank
+    }
