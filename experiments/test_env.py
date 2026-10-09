@@ -1,0 +1,46 @@
+import os
+import sys
+import numpy as np
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from environment.shilling_defense_env import ShillingDefenseEnv
+
+
+def test_environment_loop():
+    print("Initializing ShillingDefenseEnv...")
+    env = ShillingDefenseEnv(episode_length=20, num_eval_users=15, seed=42)
+
+    obs, info = env.reset(seed=42)
+    print(f"[RESET] Initial observation: {obs}")
+    print(f"[RESET] Info: {info}")
+
+    assert obs.shape == (5,), f"Expected shape (5,), got {obs.shape}"
+    assert np.all((obs >= 0.0) & (obs <= 1.0)), f"Observation values out of [0, 1] range: {obs}"
+
+    discrete_state = ShillingDefenseEnv.discretize_state(obs)
+    print(f"[DISCRETIZE] Discrete state index (0..242): {discrete_state}")
+    assert 0 <= discrete_state < 243, f"Discrete state {discrete_state} out of bounds"
+
+    total_reward = 0.0
+    for step in range(20):
+        action = env.action_space.sample()  # random action in {0, 1, 2}
+        next_obs, reward, terminated, truncated, step_info = env.step(action)
+        total_reward += reward
+
+        print(f"Step {step+1:02d}: Action={action} ({['ACCEPT', 'DOWNWEIGHT', 'BLOCK'][action]:10s}) | "
+              f"Attacker={str(step_info['is_attacker']):5s} | "
+              f"Reward={reward:+5.2f} | "
+              f"Shift={step_info['target_pred_shift']:.4f}")
+
+        if terminated:
+            print(f"[EPISODE COMPLETED] Total Reward: {total_reward:.2f}")
+            break
+
+    print("\n[SUCCESS] Environment validation passed cleanly!")
+
+
+if __name__ == "__main__":
+    test_environment_loop()
