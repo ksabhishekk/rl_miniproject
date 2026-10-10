@@ -44,6 +44,8 @@ class ShillingDefenseEnv(gym.Env):
         target_items: Optional[List[int]] = None,
         k_neighbors: int = 30,
         num_eval_users: int = 30,
+        reward_config: Optional[Dict[str, float]] = None,
+        target_feature_mode: str = "monitored",
         seed: Optional[int] = 42
     ):
         super().__init__()
@@ -56,6 +58,18 @@ class ShillingDefenseEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(5,), dtype=np.float32
         )
+
+        # Configurable reward weights (defaults preserve original behavior)
+        self.reward_config = reward_config or {
+            "block_attacker": 2.0,
+            "downweight_attacker": 0.8,
+            "accept_attacker": -2.5,
+            "accept_genuine": 1.0,
+            "downweight_genuine": -0.5,
+            "block_genuine": -2.0,
+            "rank_scale": 2.0,
+            "rank_clip": 1.0,
+        }
 
         # Dataset loading
         if train_matrix_path is None:
@@ -72,8 +86,9 @@ class ShillingDefenseEnv(gym.Env):
 
         # Monitored target items (MovieLens indices: 40=Billy Madison, 77=Free Willy, 15=French Twist)
         self.target_items = target_items if target_items is not None else [40, 77, 15]
+        self.target_feature_mode = target_feature_mode
 
-        # Compute precomputed dataset statistics
+        # Compute precomputed dataset statistics (including dynamic normalization constants)
         self._precompute_dataset_stats()
 
         # Evaluation subset of genuine users for tracking target rank shift
@@ -90,11 +105,12 @@ class ShillingDefenseEnv(gym.Env):
         self.user_weights: Optional[np.ndarray] = None
         self.clean_target_pred: float = 3.0
         self.prev_target_pred_shift: float = 0.0
+        self.shift_norm: float = 0.5  # Updated dynamically per episode in reset()
 
         self.np_random = np.random.RandomState(seed)
 
     def _precompute_dataset_stats(self):
-        """Precompute item means, popularity counts, and blockbuster items."""
+        """Precompute item means, popularity counts, blockbuster items, and dynamic normalization constants."""
         rated_mask = (self.clean_matrix > 0)
         item_rating_sums = np.sum(self.clean_matrix, axis=0)
         self.item_counts = np.sum(rated_mask, axis=0)
@@ -110,6 +126,24 @@ class ShillingDefenseEnv(gym.Env):
         # Mean user rating count
         user_counts = np.sum(rated_mask, axis=1)
         self.mean_user_activity = float(np.mean(user_counts))
+
+        # Auto-compute RDMA normalization constant from clean user distribution
+        # Uses the 95th percentile of RDMA values across all clean users so that
+        # genuine users mostly fall in [0, 1] and only extreme deviations saturate.
+        rdma_values = []
+        for u in range(self.num_clean_users):
+            row = self.clean_matrix[u]
+            rated_idx = np.where(row > 0)[0]
+            if len(rated_idx) > 0:
+                dev = np.abs(row[rated_idx] - self.item_means[rated_idx])
+                rdma_val = np.mean(dev / np.maximum(1, self.item_counts[rated_idx]))
+                rdma_values.append(rdma_val)
+        if rdma_values:
+            self.rdma_norm = float(np.percentile(rdma_values, 95))
+            # Guard against degenerate datasets where 95th percentile is near zero
+            self.rdma_norm = max(self.rdma_norm, 1e-6)
+        else:
+            self.rdma_norm = 0.05  # Fallback for empty datasets
 
     def reset(
         self,
@@ -176,6 +210,11 @@ class ShillingDefenseEnv(gym.Env):
         initial_attacked_pred = self._compute_avg_target_pred()
         self.prev_target_pred_shift = max(0.0, initial_attacked_pred - self.clean_target_pred)
 
+        # Dynamically set shift normalization to the episode's initial attack impact.
+        # This means f_SystemRankShift measures "fraction of initial attack damage remaining"
+        # rather than being compared to an arbitrary constant.
+        self.shift_norm = max(self.prev_target_pred_shift, 0.1)
+
         # 5. Form the audit stream queue (shuffled genuine + attackers)
         sampled_genuine_indices = self.np_random.choice(
             self.num_clean_users, size=num_genuine, replace=False
@@ -216,8 +255,8 @@ class ShillingDefenseEnv(gym.Env):
         if n_rated > 0:
             dev = np.abs(row[rated_idx] - self.item_means[rated_idx])
             rdma_val = np.mean(dev / np.maximum(1, self.item_counts[rated_idx]))
-            # Normalization factor ~ 0.05 on ML-100K
-            f_rdma = float(np.clip(rdma_val / 0.05, 0.0, 1.0))
+            # Dynamic normalization: uses 95th percentile of clean user RDMA distribution
+            f_rdma = float(np.clip(rdma_val / self.rdma_norm, 0.0, 1.0))
         else:
             f_rdma = 0.0
 
@@ -234,10 +273,30 @@ class ShillingDefenseEnv(gym.Env):
         f_act = float(np.clip(n_rated / (self.mean_user_activity * 2.0 + 1e-6), 0.0, 1.0))
 
         # 4. Target Item Affinity
-        f_target = 1.0 if row[self.current_target_idx] >= 4.5 else 0.0
+        if self.target_feature_mode == "target_agnostic":
+            # Target-agnostic: highest positive deviation above item mean on ANY rated item
+            if n_rated > 0:
+                pos_devs = np.maximum(0.0, row[rated_idx] - self.item_means[rated_idx])
+                max_dev = float(np.max(pos_devs))
+                f_target = float(np.clip(max_dev / 4.0, 0.0, 1.0))
+            else:
+                f_target = 0.0
+        elif self.target_feature_mode == "unmonitored":
+            # Defender does not monitor the attacked item -> zero target signal
+            f_target = 0.0
+        else:
+            # Monitored target item (oracle knowledge of target item identity)
+            target_rating = row[self.current_target_idx]
+            if target_rating > 0:
+                deviation = target_rating - self.item_means[self.current_target_idx]
+                # Normalize by max possible deviation in a 1-5 rating scale (= 4.0)
+                f_target = float(np.clip(deviation / 4.0, 0.0, 1.0))
+            else:
+                f_target = 0.0
 
         # 5. Live System Target Predicted Rating Shift
-        f_sys_shift = float(np.clip(self.prev_target_pred_shift / 0.5, 0.0, 1.0))
+        # Dynamic normalization: uses this episode's initial attack impact as scale
+        f_sys_shift = float(np.clip(self.prev_target_pred_shift / self.shift_norm, 0.0, 1.0))
 
         return np.array([f_rdma, f_degsim, f_act, f_target, f_sys_shift], dtype=np.float32)
 
@@ -272,26 +331,27 @@ class ShillingDefenseEnv(gym.Env):
         rank_delta = self.prev_target_pred_shift - curr_target_pred_shift
         self.prev_target_pred_shift = curr_target_pred_shift
 
-        # Compute Multi-Objective Reward
+        # Compute Multi-Objective Reward (using configurable reward weights)
+        rc = self.reward_config
         if is_attacker:
             if action == 2:    # BLOCK
-                r_mitigation = +2.0
+                r_mitigation = rc["block_attacker"]
             elif action == 1:  # DOWNWEIGHT
-                r_mitigation = +0.8
+                r_mitigation = rc["downweight_attacker"]
             else:              # ACCEPT (Penetrated)
-                r_mitigation = -2.5
+                r_mitigation = rc["accept_attacker"]
             r_quality = 0.0
         else:
             if action == 0:    # ACCEPT (Preserved)
-                r_quality = +1.0
+                r_quality = rc["accept_genuine"]
             elif action == 1:  # DOWNWEIGHT
-                r_quality = -0.5
+                r_quality = rc["downweight_genuine"]
             else:              # BLOCK (False positive)
-                r_quality = -2.0
+                r_quality = rc["block_genuine"]
             r_mitigation = 0.0
 
-        # Rank inflation improvement bonus/penalty
-        r_rank = float(np.clip(rank_delta * 2.0, -1.0, 1.0))
+        # Rank inflation improvement bonus/penalty (configurable scale and clip)
+        r_rank = float(np.clip(rank_delta * rc["rank_scale"], -rc["rank_clip"], rc["rank_clip"]))
 
         reward = float(r_mitigation + r_quality + r_rank)
 

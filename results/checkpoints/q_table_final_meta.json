@@ -1,0 +1,7 @@
+{
+  "num_states": 243,
+  "num_actions": 3,
+  "lr": 0.1,
+  "gamma": 0.95,
+  "epsilon": 0.05
+}
