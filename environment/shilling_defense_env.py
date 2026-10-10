@@ -366,7 +366,7 @@ class ShillingDefenseEnv(gym.Env):
         reward = float(r_mitigation + r_quality + r_rank)
 
         event = {
-            "step": self.current_step,
+            "step": self.current_step + 1,
             "profile_index": int(current_profile_idx),
             "profile_source": "synthetic_attack" if is_attacker else "movielens_genuine",
             "is_attacker": bool(is_attacker),

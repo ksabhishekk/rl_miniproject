@@ -260,6 +260,13 @@ Train and evaluate Q-Learning, DQN, and PPO against the attack stream:
 python experiments/run_comparative_benchmark.py
 ```
 
+### 4. Compare all three agents on the same attack episode
+The first run trains all three agents and saves their checkpoints under `results/checkpoints/shared_demo/`. Later runs reuse those saved agents and proceed directly to the attack comparison. Each agent runs in a separate environment with the same generated profiles and audit order, while its own defense actions determine its system feedback:
+```bash
+python experiments/run_comparative_benchmark.py --shared-scenario --target-index 40 --attack-type bandwagon
+```
+The default training seed is `42`; the comparison uses a separate scenario seed (`10042`). Override these with `--training-seed` and `--scenario-seed`. Use `--retrain-agents` to deliberately train again and replace the saved checkpoints. Results, including per-step audit events for each policy, are written to `results/shared_scenario_comparison.json`.
+
 ---
 
 ## 8. Evaluation Metrics

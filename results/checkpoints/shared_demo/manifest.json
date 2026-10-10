@@ -1,0 +1,11 @@
+{
+  "format_version": 1,
+  "training_seed": 42,
+  "training_budget": {
+    "q_learning_episodes": 150,
+    "episode_length": 100,
+    "dqn_timesteps": 15000,
+    "ppo_timesteps": 15000
+  },
+  "target_index_used_for_training": 40
+}

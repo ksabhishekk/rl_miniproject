@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import numpy as np
+import torch
 from typing import Dict, List, Any, Tuple, Optional
 import gymnasium as gym
 
@@ -272,6 +273,326 @@ def evaluate_agent_on_attack(
             "attack_block_pct": float(np.mean(attack_actions == 2) * 100),
         },
     }
+
+
+def _predict_agent_action(agent: Any, observation: np.ndarray) -> int:
+    """Get a deterministic discrete action from any supported project agent."""
+    if hasattr(agent, "select_action"):
+        action = agent.select_action(observation, training=False)
+    elif hasattr(agent, "predict"):
+        action, _ = agent.predict(observation, deterministic=True)
+    else:
+        raise TypeError("Agents must provide select_action() or predict().")
+
+    action = int(np.asarray(action).item())
+    if action not in (0, 1, 2):
+        raise ValueError(f"Agent returned invalid defense action: {action}")
+    return action
+
+
+def _binary_classification_metrics(
+    predicted_positive: np.ndarray,
+    actual_positive: np.ndarray
+) -> Dict[str, float]:
+    true_positive = int(np.sum(predicted_positive & actual_positive))
+    false_positive = int(np.sum(predicted_positive & ~actual_positive))
+    false_negative = int(np.sum(~predicted_positive & actual_positive))
+    precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else 0.0
+    recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {"precision": float(precision), "recall": float(recall), "f1": float(f1)}
+
+
+def run_shared_scenario_comparison(
+    agents: Dict[str, Any],
+    seed: int = 10042,
+    target_idx: int = 40,
+    attack_type: str = "bandwagon",
+    episode_length: int = 100,
+    genuine_ratio: float = 0.70,
+    target_feature_mode: str = "monitored",
+    k_neighbors: int = K_NEIGHBORS,
+) -> Dict[str, Any]:
+    """Run policies in isolated environments over one reproducible scenario.
+
+    Each environment is reset with identical inputs, so the attack profiles and
+    audit ordering match. The policy-specific actions and system feedback evolve
+    independently after the initial state.
+    """
+    if not agents:
+        raise ValueError("At least one trained agent is required.")
+
+    clean_matrix = load_processed_matrix("data/processed/train_matrix.npy")
+    test_matrix = load_processed_matrix("data/processed/test_matrix.npy")
+    clean_baseline = compute_clean_baseline(clean_matrix, test_matrix, target_idx, k_neighbors)
+
+    scenario_reference = None
+    agent_results: Dict[str, Any] = {}
+
+    for agent_name, agent in agents.items():
+        env = ShillingDefenseEnv(
+            episode_length=episode_length,
+            genuine_ratio=genuine_ratio,
+            target_items=[target_idx],
+            target_feature_mode=target_feature_mode,
+            k_neighbors=k_neighbors,
+            seed=seed,
+        )
+        observation, _ = env.reset(
+            seed=seed,
+            options={"target_item": target_idx, "attack_type": attack_type},
+        )
+
+        scenario = (
+            env.active_matrix.copy(),
+            tuple(env.queue_profile_indices),
+            tuple(env.queue_is_attacker),
+        )
+        if scenario_reference is None:
+            scenario_reference = scenario
+        elif (
+            not np.array_equal(scenario[0], scenario_reference[0])
+            or scenario[1:] != scenario_reference[1:]
+        ):
+            raise RuntimeError("Agent environments did not receive the same attack scenario and profile stream.")
+
+        total_reward = 0.0
+        terminated = False
+        while not terminated:
+            action = _predict_agent_action(agent, observation)
+            observation, reward, terminated, truncated, _ = env.step(action)
+            total_reward += reward
+            if truncated:
+                raise RuntimeError("The shared-scenario episode was unexpectedly truncated.")
+
+        events = env.episode_events
+        actions = np.array([event["action"] for event in events], dtype=int)
+        labels = np.array([event["is_attacker"] for event in events], dtype=bool)
+        intervention_metrics = _binary_classification_metrics(actions > 0, labels)
+        block_metrics = _binary_classification_metrics(actions == 2, labels)
+
+        target_impact = evaluate_target_item_impact(
+            env.recommender, target_idx, clean_baseline["eval_users"], k=10
+        )
+        test_rmse = evaluate_test_rmse(env.recommender, test_matrix, max_eval_users=50)
+        coverage = evaluate_catalog_coverage(
+            env.recommender, clean_matrix.shape[1], clean_baseline["eval_users"][:50], k=10
+        )
+        genuine_topk = evaluate_genuine_top_k_metrics(
+            env.recommender, test_matrix, rating_threshold=3.5, k=10, max_eval_users=50
+        )
+        genuine_actions = actions[~labels]
+        attack_actions = actions[labels]
+
+        agent_results[agent_name] = {
+            "total_reward": float(total_reward),
+            "steps": len(events),
+            "target_prediction": target_impact["avg_target_predicted_rating"],
+            "clean_target_prediction": clean_baseline["clean_target_pred"],
+            "target_prediction_shift": float(
+                target_impact["avg_target_predicted_rating"] - clean_baseline["clean_target_pred"]
+            ),
+            "target_hit_ratio_at_10": target_impact["target_hit_ratio_at_k"],
+            "clean_target_hit_ratio_at_10": clean_baseline["clean_hr10"],
+            "test_rmse": float(test_rmse),
+            "clean_test_rmse": clean_baseline["clean_rmse"],
+            "catalog_coverage": float(coverage),
+            "clean_catalog_coverage": clean_baseline["clean_coverage"],
+            "genuine_hit_rate_at_10": genuine_topk["hit_rate@10"],
+            "clean_genuine_hit_rate_at_10": clean_baseline["clean_genuine_hit_rate"],
+            "intervention_metrics": intervention_metrics,
+            "strict_block_metrics": block_metrics,
+            "action_distribution": {
+                "genuine_accept_pct": float(np.mean(genuine_actions == 0) * 100) if len(genuine_actions) else 0.0,
+                "genuine_downweight_pct": float(np.mean(genuine_actions == 1) * 100) if len(genuine_actions) else 0.0,
+                "genuine_block_pct": float(np.mean(genuine_actions == 2) * 100) if len(genuine_actions) else 0.0,
+                "attack_accept_pct": float(np.mean(attack_actions == 0) * 100) if len(attack_actions) else 0.0,
+                "attack_downweight_pct": float(np.mean(attack_actions == 1) * 100) if len(attack_actions) else 0.0,
+                "attack_block_pct": float(np.mean(attack_actions == 2) * 100) if len(attack_actions) else 0.0,
+            },
+            "events": events,
+        }
+
+    return {
+        "scenario": {
+            "seed": int(seed),
+            "target_index": int(target_idx),
+            "attack_type": attack_type,
+            "episode_length": int(episode_length),
+            "genuine_ratio": float(genuine_ratio),
+            "target_feature_mode": target_feature_mode,
+            "num_genuine_in_stream": int(sum(not label for label in scenario_reference[2])),
+            "num_attackers_in_stream": int(sum(scenario_reference[2])),
+            "profile_stream": [
+                {"profile_index": int(index), "is_attacker": bool(label)}
+                for index, label in zip(scenario_reference[1], scenario_reference[2])
+            ],
+        },
+        "agents": agent_results,
+    }
+
+
+def _shared_demo_checkpoint_paths(checkpoint_dir: Optional[str] = None) -> Dict[str, str]:
+    checkpoint_dir = checkpoint_dir or os.path.join(
+        PROJECT_ROOT, "results", "checkpoints", "shared_demo"
+    )
+    return {
+        "directory": checkpoint_dir,
+        "manifest": os.path.join(checkpoint_dir, "manifest.json"),
+        "q_learning": os.path.join(checkpoint_dir, "q_learning.npy"),
+        "q_learning_meta": os.path.join(checkpoint_dir, "q_learning_meta.json"),
+        "dqn": os.path.join(checkpoint_dir, "dqn_policy.pth"),
+        "ppo": os.path.join(checkpoint_dir, "ppo_policy.pth"),
+    }
+
+
+def _load_shared_demo_agents(
+    paths: Dict[str, str],
+    target_idx: int,
+    seed: int,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Load a complete trained-agent checkpoint set and its manifest."""
+    with open(paths["manifest"], "r") as f:
+        manifest = json.load(f)
+    if manifest.get("format_version") != 1:
+        raise ValueError(f"Unsupported shared-demo checkpoint format: {manifest.get('format_version')}")
+
+    q_agent = QLearningAgent(
+        learning_rate=0.1, gamma=0.95, epsilon=1.0,
+        epsilon_decay=0.98, epsilon_min=0.05, seed=seed,
+    )
+    q_agent.load(paths["q_learning"])
+
+    dqn_env = ShillingDefenseEnv(target_items=[target_idx], seed=seed)
+    ppo_env = ShillingDefenseEnv(target_items=[target_idx], seed=seed)
+    dqn_model = create_dqn_agent(
+        dqn_env, learning_rate=1e-3, buffer_size=10000, learning_starts=100,
+        batch_size=64, seed=seed, verbose=0,
+    )
+    ppo_model = create_ppo_agent(
+        ppo_env, learning_rate=3e-4, n_steps=128, batch_size=32,
+        n_epochs=5, seed=seed, verbose=0,
+    )
+    dqn_model.policy.load_state_dict(torch.load(paths["dqn"], map_location="cpu", weights_only=True))
+    ppo_model.policy.load_state_dict(torch.load(paths["ppo"], map_location="cpu", weights_only=True))
+    agents = {
+        "Q-Learning": q_agent,
+        "DQN": dqn_model,
+        "PPO": ppo_model,
+    }
+    return agents, manifest
+
+
+def _train_and_save_shared_demo_agents(
+    paths: Dict[str, str],
+    training_seed: int,
+    target_idx: int,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Train all three policies once and persist a complete checkpoint set."""
+    os.makedirs(paths["directory"], exist_ok=True)
+    if os.path.exists(paths["manifest"]):
+        os.remove(paths["manifest"])
+
+    q_env = ShillingDefenseEnv(target_items=[target_idx], seed=training_seed)
+    dqn_env = ShillingDefenseEnv(target_items=[target_idx], seed=training_seed)
+    ppo_env = ShillingDefenseEnv(target_items=[target_idx], seed=training_seed)
+
+    print(f"Training Q-Learning ({Q_LEARNING_EPISODES} episodes)...")
+    q_agent = train_q_learning(q_env, seed=training_seed)
+    q_agent.save(paths["q_learning"])
+
+    print(f"Training DQN ({DQN_TIMESTEPS} timesteps)...")
+    dqn_model = train_dqn_policy(dqn_env, seed=training_seed)
+    torch.save(dqn_model.policy.state_dict(), paths["dqn"])
+
+    print(f"Training PPO ({PPO_TIMESTEPS} timesteps)...")
+    ppo_model = train_ppo_policy(ppo_env, seed=training_seed)
+    torch.save(ppo_model.policy.state_dict(), paths["ppo"])
+
+    manifest = {
+        "format_version": 1,
+        "training_seed": int(training_seed),
+        "training_budget": {
+            "q_learning_episodes": Q_LEARNING_EPISODES,
+            "episode_length": 100,
+            "dqn_timesteps": DQN_TIMESTEPS,
+            "ppo_timesteps": PPO_TIMESTEPS,
+        },
+        "target_index_used_for_training": int(target_idx),
+    }
+    with open(paths["manifest"], "w") as f:
+        json.dump(manifest, f, indent=2)
+    return {"Q-Learning": q_agent, "DQN": dqn_model, "PPO": ppo_model}, manifest
+
+
+def load_or_train_shared_demo_agents(
+    training_seed: int = 42,
+    target_idx: int = 40,
+    retrain: bool = False,
+    checkpoint_dir: Optional[str] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Reuse saved agents by default; train and save only if needed or requested."""
+    paths = _shared_demo_checkpoint_paths(checkpoint_dir)
+    required_files = [
+        paths["manifest"], paths["q_learning"], paths["q_learning_meta"],
+        paths["dqn"], paths["ppo"],
+    ]
+    checkpoint_complete = all(os.path.isfile(path) for path in required_files)
+
+    if checkpoint_complete and not retrain:
+        print(f"Loading trained agents from {paths['directory']}...")
+        return _load_shared_demo_agents(paths, target_idx, training_seed)
+
+    if not retrain and any(os.path.exists(path) for path in required_files):
+        print("A partial shared-demo checkpoint was found; training a complete replacement set.")
+    elif retrain:
+        print("Retraining shared-demo agents as requested.")
+    else:
+        print("No trained shared-demo checkpoints found; training the agents now.")
+
+    agents, manifest = _train_and_save_shared_demo_agents(paths, training_seed, target_idx)
+    print(f"Trained agents saved to {paths['directory']}")
+    return agents, manifest
+
+
+def run_shared_scenario_demo(
+    training_seed: int = 42,
+    scenario_seed: Optional[int] = None,
+    target_idx: int = 40,
+    attack_type: str = "bandwagon",
+    episode_length: int = 100,
+    retrain_agents: bool = False,
+) -> Dict[str, Any]:
+    """Load or train the three RL agents, then compare on one shared scenario."""
+    scenario_seed = training_seed + 10000 if scenario_seed is None else scenario_seed
+    agents, training_manifest = load_or_train_shared_demo_agents(
+        training_seed=training_seed,
+        target_idx=target_idx,
+        retrain=retrain_agents,
+    )
+
+    result = run_shared_scenario_comparison(
+        agents,
+        seed=scenario_seed,
+        target_idx=target_idx,
+        attack_type=attack_type,
+        episode_length=episode_length,
+    )
+    result["training"] = training_manifest
+    results_dir = os.path.join(PROJECT_ROOT, "results")
+    os.makedirs(results_dir, exist_ok=True)
+    output_path = os.path.join(results_dir, "shared_scenario_comparison.json")
+    with open(output_path, "w") as f:
+        json.dump(result, f, indent=2)
+
+    print(f"Shared-scenario results saved to {output_path}")
+    for agent_name, metrics in result["agents"].items():
+        print(
+            f"  {agent_name:12s} | target shift={metrics['target_prediction_shift']:+.4f} "
+            f"| HR@10={metrics['target_hit_ratio_at_10']:.3f} "
+            f"| intervention F1={metrics['intervention_metrics']['f1']:.3f}"
+        )
+    return result
 
 
 # ===== FEATURE ABLATION SUPPORT =====
@@ -758,12 +1079,37 @@ if __name__ == "__main__":
     parser.add_argument("--ablation", action="store_true", help="Include multi-seed ablation")
     parser.add_argument("--generalization", action="store_true", help="Include unseen target generalization test")
     parser.add_argument("--all", action="store_true", help="Run benchmark + ablation + generalization")
+    parser.add_argument(
+        "--shared-scenario",
+        action="store_true",
+        help="Train Q-Learning, DQN, and PPO, then compare them on one identical attack episode",
+    )
+    parser.add_argument("--training-seed", type=int, default=42, help="Seed for training the shared-scenario agents")
+    parser.add_argument("--scenario-seed", type=int, help="Scenario seed (defaults to training seed + 10000)")
+    parser.add_argument("--target-index", type=int, choices=TARGET_ITEMS, default=40, help="Zero-based target item index")
+    parser.add_argument("--attack-type", choices=ATTACK_TYPES, default="bandwagon")
+    parser.add_argument(
+        "--retrain-agents",
+        action="store_true",
+        help="Force retraining and overwrite the saved shared-demo agent checkpoints",
+    )
     args = parser.parse_args()
 
-    run_full_comparative_benchmark(num_seeds=args.seeds)
+    if args.shared_scenario:
+        run_shared_scenario_demo(
+            training_seed=args.training_seed,
+            scenario_seed=args.scenario_seed,
+            target_idx=args.target_index,
+            attack_type=args.attack_type,
+            retrain_agents=args.retrain_agents,
+        )
+    else:
+        if args.retrain_agents:
+            parser.error("--retrain-agents can only be used with --shared-scenario")
+        run_full_comparative_benchmark(num_seeds=args.seeds)
 
-    if args.ablation or args.all:
-        run_ablation_study(num_seeds=args.seeds)
+        if args.ablation or args.all:
+            run_ablation_study(num_seeds=args.seeds)
 
-    if args.generalization or args.all:
-        run_unseen_target_generalization(num_seeds=args.seeds)
+        if args.generalization or args.all:
+            run_unseen_target_generalization(num_seeds=args.seeds)
