@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import numpy as np
@@ -7,6 +8,15 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from environment.shilling_defense_env import ShillingDefenseEnv
+from recommendation.data_preprocessing import load_processed_matrix
+
+
+def test_processed_matrix_is_cached():
+    first = load_processed_matrix("data/processed/train_matrix.npy")
+    second = load_processed_matrix("data/processed/train_matrix.npy")
+
+    assert first is second
+    assert not first.flags.writeable
 
 
 def test_environment_loop():
@@ -19,6 +29,7 @@ def test_environment_loop():
 
     assert obs.shape == (5,), f"Expected shape (5,), got {obs.shape}"
     assert np.all((obs >= 0.0) & (obs <= 1.0)), f"Observation values out of [0, 1] range: {obs}"
+    assert env.episode_events == [], "A reset should start with an empty audit event log"
 
     discrete_state = ShillingDefenseEnv.discretize_state(obs)
     print(f"[DISCRETIZE] Discrete state index (0..242): {discrete_state}")
@@ -29,6 +40,15 @@ def test_environment_loop():
         action = env.action_space.sample()  # random action in {0, 1, 2}
         next_obs, reward, terminated, truncated, step_info = env.step(action)
         total_reward += reward
+        event = step_info["audit_event"]
+        assert event == env.episode_events[-1], "Step info and episode event log should match"
+        json.dumps(event)
+        assert event["action"] == action
+        assert event["defense_weight"] == env.action_to_weight[action]
+        assert event["profile_source"] in {"movielens_genuine", "synthetic_attack"}
+        assert event["ratings"], "The recorded profile should include its rated items"
+        assert len(event["features"]) == 5
+        assert event["target_prediction_after"] == step_info["target_prediction_after"]
 
         print(f"Step {step+1:02d}: Action={action} ({['ACCEPT', 'DOWNWEIGHT', 'BLOCK'][action]:10s}) | "
               f"Attacker={str(step_info['is_attacker']):5s} | "

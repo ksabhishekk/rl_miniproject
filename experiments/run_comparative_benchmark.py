@@ -21,6 +21,7 @@ from recommendation.evaluation import (
     evaluate_genuine_top_k_metrics,
 )
 from recommendation.recommender import UserBasedCF
+from recommendation.data_preprocessing import load_processed_matrix
 from attacks.attack_simulator import ShillingAttackSimulator
 
 # ===== EXPERIMENT CONFIGURATION =====
@@ -374,8 +375,8 @@ def run_full_comparative_benchmark(num_seeds: int = 3):
     print(f"  Attacks:                     {ATTACK_TYPES}")
     print("=" * 120)
 
-    clean_matrix = np.load("data/processed/train_matrix.npy")
-    test_matrix = np.load("data/processed/test_matrix.npy")
+    clean_matrix = load_processed_matrix("data/processed/train_matrix.npy")
+    test_matrix = load_processed_matrix("data/processed/test_matrix.npy")
 
     # Precompute clean baseline per target once
     print("\n  Precomputing clean CF baselines for all target items...")
@@ -564,8 +565,8 @@ def run_ablation_study(num_seeds: int = 3, num_episodes: int = Q_LEARNING_EPISOD
     print(f"  MULTI-SEED ABLATION STUDY: Feature Importance & Generalization across {len(seeds)} Seeds")
     print("=" * 120)
 
-    clean_matrix = np.load("data/processed/train_matrix.npy")
-    test_matrix = np.load("data/processed/test_matrix.npy")
+    clean_matrix = load_processed_matrix("data/processed/train_matrix.npy")
+    test_matrix = load_processed_matrix("data/processed/test_matrix.npy")
 
     clean_baselines = {}
     for target_idx in TARGET_ITEMS:
@@ -692,8 +693,8 @@ def run_unseen_target_generalization(num_seeds: int = 3):
     print("  Trained on Targets: [40, 77]  -->  Evaluated on UNSEEN Target: 15 (French Twist)")
     print("=" * 120)
 
-    clean_matrix = np.load("data/processed/train_matrix.npy")
-    test_matrix = np.load("data/processed/test_matrix.npy")
+    clean_matrix = load_processed_matrix("data/processed/train_matrix.npy")
+    test_matrix = load_processed_matrix("data/processed/test_matrix.npy")
     clean_baseline = compute_clean_baseline(clean_matrix, test_matrix, 15, K_NEIGHBORS)
 
     eval_modes = {

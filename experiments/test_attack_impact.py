@@ -8,13 +8,13 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from recommendation.data_preprocessing import load_movies
+from recommendation.data_preprocessing import load_movies, load_processed_matrix
 from recommendation.recommender import UserBasedCF
 from attacks.attack_simulator import ShillingAttackSimulator
 from recommendation.evaluation import evaluate_target_item_impact
 
 def run_attack_experiments():
-    train_matrix = np.load("data/processed/train_matrix.npy")
+    train_matrix = load_processed_matrix("data/processed/train_matrix.npy")
     movies_df = load_movies()
 
     # We evaluate across 3 representative target movies:

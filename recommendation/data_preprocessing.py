@@ -3,11 +3,33 @@ import urllib.request
 import zipfile
 import numpy as np
 import pandas as pd
+from functools import lru_cache
 from typing import Tuple, Dict
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 ML100K_DIR = os.path.join(DATA_DIR, "ml-100k")
 ML100K_URL = "https://files.grouplens.org/datasets/movielens/ml-100k.zip"
+
+
+@lru_cache(maxsize=4)
+def _load_processed_matrix_cached(matrix_path: str) -> np.ndarray:
+    """Load one processed matrix once and share it as read-only data."""
+    matrix = np.load(matrix_path).astype(np.float32, copy=False)
+    matrix.setflags(write=False)
+    return matrix
+
+
+def load_processed_matrix(matrix_path: str) -> np.ndarray:
+    """Load a processed matrix, reusing the cached array for the same file.
+
+    Relative paths are resolved from the project root rather than the caller's
+    current working directory.
+    """
+    if not os.path.isabs(matrix_path):
+        matrix_path = os.path.join(PROJECT_ROOT, matrix_path)
+    normalized_path = os.path.normcase(os.path.realpath(matrix_path))
+    return _load_processed_matrix_cached(normalized_path)
 
 
 def download_and_extract_ml100k(data_dir: str = DATA_DIR) -> str:

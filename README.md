@@ -141,6 +141,12 @@ flowchart TD
 
 * **$\Delta \text{RankInflation}$**: Bonus ($+0.5$) when target item prediction drops back toward clean baseline; penalty ($-0.5$) if target item prediction increases.
 
+### Simulation data and per-step audit events
+
+The environment loads the processed training matrix from `data/processed/train_matrix.npy`; it does not re-read raw MovieLens ratings or rerun preprocessing during `reset()`. Processed matrices are cached and shared read-only between environment instances. Each reset still generates fresh synthetic profiles, rebuilds the episode recommender, and measures the clean and attacked starting predictions.
+
+After each action, `env.episode_events` contains a JSON-serializable record with the profile source and sparse ratings, the five feature values, action and defense weight, reward components, and target predictions/shifts before and after the decision. The same record is returned in that step's `info["audit_event"]`. Ratings use zero-based matrix item indices. The `is_attacker` field is ground truth used by the simulated reward and evaluation; it is not part of the five-value observation given to the policy.
+
 ---
 
 ## 4. The Attack Simulator

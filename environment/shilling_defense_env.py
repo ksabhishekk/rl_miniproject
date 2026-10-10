@@ -5,6 +5,7 @@ from gymnasium import spaces
 from typing import Optional, Dict, Tuple, List, Any
 
 from recommendation.recommender import UserBasedCF
+from recommendation.data_preprocessing import load_processed_matrix
 from attacks.attack_simulator import ShillingAttackSimulator
 
 
@@ -76,7 +77,7 @@ class ShillingDefenseEnv(gym.Env):
             root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             train_matrix_path = os.path.join(root_dir, "data", "processed", "train_matrix.npy")
 
-        self.clean_matrix = np.load(train_matrix_path).astype(np.float32)
+        self.clean_matrix = load_processed_matrix(train_matrix_path)
         self.num_clean_users, self.num_items = self.clean_matrix.shape
 
         self.episode_length = episode_length
@@ -104,8 +105,10 @@ class ShillingDefenseEnv(gym.Env):
         self.recommender: Optional[UserBasedCF] = None
         self.user_weights: Optional[np.ndarray] = None
         self.clean_target_pred: float = 3.0
+        self.current_target_pred: float = 3.0
         self.prev_target_pred_shift: float = 0.0
         self.shift_norm: float = 0.5  # Updated dynamically per episode in reset()
+        self.episode_events: List[Dict[str, Any]] = []
 
         self.np_random = np.random.RandomState(seed)
 
@@ -156,6 +159,7 @@ class ShillingDefenseEnv(gym.Env):
             self.np_random = np.random.RandomState(seed)
 
         options = options or {}
+        self.episode_events = []
         # Select target item for this episode
         self.current_target_idx = options.get(
             "target_item",
@@ -208,6 +212,7 @@ class ShillingDefenseEnv(gym.Env):
         # Reset weights back to 1.0 for the start of the audit episode
         self.recommender.set_user_weights(self.user_weights)
         initial_attacked_pred = self._compute_avg_target_pred()
+        self.current_target_pred = initial_attacked_pred
         self.prev_target_pred_shift = max(0.0, initial_attacked_pred - self.clean_target_pred)
 
         # Dynamically set shift normalization to the episode's initial attack impact.
@@ -319,6 +324,10 @@ class ShillingDefenseEnv(gym.Env):
 
         current_profile_idx = self.queue_profile_indices[self.current_step]
         is_attacker = self.queue_is_attacker[self.current_step]
+        profile_features = self._extract_state_features(current_profile_idx)
+        target_prediction_before = self.current_target_pred
+        target_prediction_shift_before = self.prev_target_pred_shift
+        profile_ratings = self.active_matrix[current_profile_idx]
         weight = self.action_to_weight[action]
 
         # Apply action to recommender
@@ -329,6 +338,7 @@ class ShillingDefenseEnv(gym.Env):
         curr_target_pred = self._compute_avg_target_pred()
         curr_target_pred_shift = max(0.0, curr_target_pred - self.clean_target_pred)
         rank_delta = self.prev_target_pred_shift - curr_target_pred_shift
+        self.current_target_pred = curr_target_pred
         self.prev_target_pred_shift = curr_target_pred_shift
 
         # Compute Multi-Objective Reward (using configurable reward weights)
@@ -355,6 +365,38 @@ class ShillingDefenseEnv(gym.Env):
 
         reward = float(r_mitigation + r_quality + r_rank)
 
+        event = {
+            "step": self.current_step,
+            "profile_index": int(current_profile_idx),
+            "profile_source": "synthetic_attack" if is_attacker else "movielens_genuine",
+            "is_attacker": bool(is_attacker),
+            "ratings": [
+                {"item_index": int(item_idx), "rating": float(profile_ratings[item_idx])}
+                for item_idx in np.flatnonzero(profile_ratings > 0)
+            ],
+            "features": {
+                "rdma": float(profile_features[0]),
+                "degsim": float(profile_features[1]),
+                "activity_ratio": float(profile_features[2]),
+                "target_affinity": float(profile_features[3]),
+                "system_prediction_shift": float(profile_features[4]),
+            },
+            "action": int(action),
+            "action_name": ("ACCEPT", "DOWNWEIGHT", "BLOCK")[action],
+            "defense_weight": float(weight),
+            "reward": reward,
+            "reward_components": {
+                "mitigation": float(r_mitigation),
+                "quality": float(r_quality),
+                "rank": float(r_rank),
+            },
+            "target_prediction_before": float(target_prediction_before),
+            "target_prediction_after": float(curr_target_pred),
+            "target_prediction_shift_before": float(target_prediction_shift_before),
+            "target_prediction_shift_after": float(curr_target_pred_shift),
+        }
+        self.episode_events.append(event)
+
         self.current_step += 1
         terminated = (self.current_step >= self.episode_length)
         truncated = False
@@ -373,9 +415,12 @@ class ShillingDefenseEnv(gym.Env):
             "defense_weight": float(weight),
             "is_attacker": is_attacker,
             "target_pred_shift": float(curr_target_pred_shift),
+            "target_prediction_before": float(target_prediction_before),
+            "target_prediction_after": float(curr_target_pred),
             "reward_mitigation": float(r_mitigation),
             "reward_quality": float(r_quality),
-            "reward_rank": float(r_rank)
+            "reward_rank": float(r_rank),
+            "audit_event": event,
         }
 
         return next_obs, reward, terminated, truncated, info
