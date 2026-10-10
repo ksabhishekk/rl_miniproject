@@ -114,3 +114,83 @@ def evaluate_target_item_impact(
         "target_hit_ratio_at_k": hit_ratio,
         "target_avg_rank_in_top_k": avg_rank
     }
+
+
+def evaluate_test_rmse(
+    recommender: UserBasedCF,
+    test_matrix: np.ndarray,
+    max_eval_users: int = 200
+) -> float:
+    """
+    Compute RMSE on held-out test ratings stored as a numpy matrix.
+    Only evaluates on entries where test_matrix > 0 (actual ratings exist).
+    """
+    squared_errors = []
+    num_users = min(max_eval_users, test_matrix.shape[0])
+
+    for u_idx in range(num_users):
+        rated_items = np.where(test_matrix[u_idx] > 0)[0]
+        if len(rated_items) == 0:
+            continue
+
+        preds = recommender.predict_user_ratings(u_idx)
+        for i_idx in rated_items:
+            actual = float(test_matrix[u_idx, i_idx])
+            predicted = float(preds[i_idx])
+            squared_errors.append((actual - predicted) ** 2)
+
+    if squared_errors:
+        return float(np.sqrt(np.mean(squared_errors)))
+    return 0.0
+
+
+def evaluate_catalog_coverage(
+    recommender: UserBasedCF,
+    total_items: int,
+    eval_user_indices: List[int],
+    k: int = 10
+) -> float:
+    """
+    Compute catalog coverage: fraction of total items recommended at least once in top-k.
+    """
+    recommended_items = set()
+    for u_idx in eval_user_indices:
+        recs = recommender.recommend_top_k(u_idx, k=k, filter_already_rated=True)
+        for i_idx, _ in recs:
+            recommended_items.add(i_idx)
+    return float(len(recommended_items) / total_items) if total_items > 0 else 0.0
+
+
+def evaluate_genuine_top_k_metrics(
+    recommender: UserBasedCF,
+    test_matrix: np.ndarray,
+    rating_threshold: float = 3.5,
+    k: int = 10,
+    max_eval_users: int = 100
+) -> Dict[str, float]:
+    """
+    Evaluate ranking metrics: HitRate@K, Precision@K, Recall@K on genuine users' test ratings.
+    """
+    precisions = []
+    recalls = []
+    hits = []
+    num_users = min(max_eval_users, test_matrix.shape[0])
+
+    for u_idx in range(num_users):
+        relevant_items = set(np.where(test_matrix[u_idx] >= rating_threshold)[0])
+        if len(relevant_items) == 0:
+            continue
+        recs = recommender.recommend_top_k(u_idx, k=k, filter_already_rated=True)
+        recommended_items = set([item_idx for item_idx, _ in recs])
+        n_rel_rec = len(relevant_items.intersection(recommended_items))
+
+        precisions.append(n_rel_rec / k)
+        recalls.append(n_rel_rec / len(relevant_items))
+        hits.append(1.0 if n_rel_rec > 0 else 0.0)
+
+    return {
+        f"hit_rate@{k}": float(np.mean(hits)) if hits else 0.0,
+        f"precision@{k}": float(np.mean(precisions)) if precisions else 0.0,
+        f"recall@{k}": float(np.mean(recalls)) if recalls else 0.0,
+    }
+

@@ -59,11 +59,16 @@ def load_movies(dataset_dir: str = ML100K_DIR) -> pd.DataFrame:
     return df[["item_id", "title", "release_date"]]
 
 
-def create_user_item_matrix(ratings_df: pd.DataFrame, num_users: int = 943, num_items: int = 1682) -> np.ndarray:
+def create_user_item_matrix(ratings_df: pd.DataFrame, num_users: int = None, num_items: int = None) -> np.ndarray:
     """
     Construct user-item matrix where rows are users (0-indexed)
     and columns are items (0-indexed). Unrated entries are 0.0.
+    Dimensions are auto-detected from the data if not specified.
     """
+    if num_users is None:
+        num_users = int(ratings_df["user_id"].max())
+    if num_items is None:
+        num_items = int(ratings_df["item_id"].max())
     matrix = np.zeros((num_users, num_items), dtype=np.float32)
     for row in ratings_df.itertuples():
         u_idx = int(row.user_id) - 1
