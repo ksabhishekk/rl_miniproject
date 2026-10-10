@@ -37,6 +37,11 @@ class FixedPredictionAgent:
 
 
 def test_agents_share_profile_stream_and_keep_independent_actions():
+    callback_frames = []
+
+    def collect_frame(step, events):
+        callback_frames.append((step, events))
+
     result = run_shared_scenario_comparison(
         {
             "accept": FixedActionAgent(0),
@@ -47,10 +52,12 @@ def test_agents_share_profile_stream_and_keep_independent_actions():
         target_idx=40,
         attack_type="bandwagon",
         episode_length=10,
+        progress_callback=collect_frame,
     )
 
     stream = result["scenario"]["profile_stream"]
     assert len(stream) == 10
+    assert [step for step, _ in callback_frames] == list(range(1, 11))
     for name, expected_action in (("accept", 0), ("downweight", 1), ("block", 2)):
         events = result["agents"][name]["events"]
         assert len(events) == len(stream)
@@ -61,6 +68,9 @@ def test_agents_share_profile_stream_and_keep_independent_actions():
             entry["is_attacker"] for entry in stream
         ]
         assert {event["action"] for event in events} == {expected_action}
+    for frame_step, frame_events in callback_frames:
+        assert set(frame_events) == {"accept", "downweight", "block"}
+        assert all(event["step"] == frame_step for event in frame_events.values())
     json.dumps(result)
 
 

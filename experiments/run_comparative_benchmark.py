@@ -4,7 +4,7 @@ import json
 import time
 import numpy as np
 import torch
-from typing import Dict, List, Any, Tuple, Optional
+from typing import Dict, List, Any, Tuple, Optional, Callable
 import gymnasium as gym
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -312,6 +312,7 @@ def run_shared_scenario_comparison(
     genuine_ratio: float = 0.70,
     target_feature_mode: str = "monitored",
     k_neighbors: int = K_NEIGHBORS,
+    progress_callback: Optional[Callable[[int, Dict[str, Dict[str, Any]]], None]] = None,
 ) -> Dict[str, Any]:
     """Run policies in isolated environments over one reproducible scenario.
 
@@ -327,8 +328,11 @@ def run_shared_scenario_comparison(
     clean_baseline = compute_clean_baseline(clean_matrix, test_matrix, target_idx, k_neighbors)
 
     scenario_reference = None
-    agent_results: Dict[str, Any] = {}
+    environments: Dict[str, ShillingDefenseEnv] = {}
+    observations: Dict[str, np.ndarray] = {}
+    total_rewards = {name: 0.0 for name in agents}
 
+    # Reset every independent environment with the same seed and options.
     for agent_name, agent in agents.items():
         env = ShillingDefenseEnv(
             episode_length=episode_length,
@@ -356,15 +360,29 @@ def run_shared_scenario_comparison(
         ):
             raise RuntimeError("Agent environments did not receive the same attack scenario and profile stream.")
 
-        total_reward = 0.0
-        terminated = False
-        while not terminated:
-            action = _predict_agent_action(agent, observation)
-            observation, reward, terminated, truncated, _ = env.step(action)
-            total_reward += reward
+        environments[agent_name] = env
+        observations[agent_name] = observation
+
+    agent_names = list(agents)
+    for step_index in range(episode_length):
+        step_events: Dict[str, Dict[str, Any]] = {}
+        for agent_name in agent_names:
+            env = environments[agent_name]
+            action = _predict_agent_action(agents[agent_name], observations[agent_name])
+            observation, reward, terminated, truncated, info = env.step(action)
+            observations[agent_name] = observation
+            total_rewards[agent_name] += reward
+            step_events[agent_name] = info["audit_event"]
             if truncated:
                 raise RuntimeError("The shared-scenario episode was unexpectedly truncated.")
+            if terminated != (step_index == episode_length - 1):
+                raise RuntimeError(f"Agent {agent_name} terminated at an unexpected step.")
+        if progress_callback is not None:
+            progress_callback(step_index + 1, step_events)
 
+    agent_results: Dict[str, Any] = {}
+    for agent_name in agent_names:
+        env = environments[agent_name]
         events = env.episode_events
         actions = np.array([event["action"] for event in events], dtype=int)
         labels = np.array([event["is_attacker"] for event in events], dtype=bool)
@@ -385,7 +403,7 @@ def run_shared_scenario_comparison(
         attack_actions = actions[labels]
 
         agent_results[agent_name] = {
-            "total_reward": float(total_reward),
+            "total_reward": float(total_rewards[agent_name]),
             "steps": len(events),
             "target_prediction": target_impact["avg_target_predicted_rating"],
             "clean_target_prediction": clean_baseline["clean_target_pred"],

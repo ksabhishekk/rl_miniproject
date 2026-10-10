@@ -267,6 +267,13 @@ python experiments/run_comparative_benchmark.py --shared-scenario --target-index
 ```
 The default training seed is `42`; the comparison uses a separate scenario seed (`10042`). Override these with `--training-seed` and `--scenario-seed`. Use `--retrain-agents` to deliberately train again and replace the saved checkpoints. Results, including per-step audit events for each policy, are written to `results/shared_scenario_comparison.json`.
 
+### 5. Launch the interactive Attack Observatory
+Install dependencies with `pip install -r requirements.txt`, then start the UI:
+```bash
+streamlit run app.py
+```
+The sidebar selects the target movie, simulated attack pattern, attack share, total profiles, reproducible scenario seed, and display-only replay delay. It also lets you inspect a reference MovieLens user's ratings; this user selection does not choose the profiles used in the audit. You operate the defense while the simulator generates attacks and each policy chooses whether to accept, downweight, or block each profile. On first use, choose **Train and save the three policies**; later sessions can load those checkpoints. **Run defense simulation** replays the same stream through isolated environments and compares detection decisions and recommendation-impact changes against the clean baseline. UI runs are saved separately to `results/ui_runs/shared_scenario_comparison.json`, leaving the benchmark output untouched.
+
 ---
 
 ## 8. Evaluation Metrics

@@ -3,5 +3,6 @@ __pycache__/
 *$py.class
 .ipynb_checkpoints/
 *.log
+results/ui_runs/
 .DS_Store
 Thumbs.db
