@@ -267,12 +267,51 @@ python experiments/run_comparative_benchmark.py --shared-scenario --target-index
 ```
 The default training seed is `42`; the comparison uses a separate scenario seed (`10042`). Override these with `--training-seed` and `--scenario-seed`. Use `--retrain-agents` to deliberately train again and replace the saved checkpoints. Results, including per-step audit events for each policy, are written to `results/shared_scenario_comparison.json`.
 
-### 5. Launch the interactive Attack Observatory
+### 5. Complete end-to-end workflow in the app
 Install dependencies with `pip install -r requirements.txt`, then start the UI:
 ```bash
 streamlit run app.py
 ```
-The sidebar selects the target movie, simulated attack pattern, attack share, total profiles, reproducible scenario seed, and display-only replay delay. It also lets you inspect a reference MovieLens user's ratings; this user selection does not choose the profiles used in the audit. You operate the defense while the simulator generates attacks and each policy chooses whether to accept, downweight, or block each profile. On first use, choose **Train and save the three policies**; later sessions can load those checkpoints. **Run defense simulation** replays the same stream through isolated environments and compares detection decisions and recommendation-impact changes against the clean baseline. UI runs are saved separately to `results/ui_runs/shared_scenario_comparison.json`, leaving the benchmark output untouched.
+The complete workflow in the current project is:
+
+1. **Choose the benchmark scenario**
+   - Select the target movie (for example, Billy Madison, Free Willy, or French Twist).
+   - Select the attack family: Random, Average, or Bandwagon.
+   - Set the injected attack share and the total profile count in the audit stream.
+   - Choose the comparison mode:
+     - **Shared-scenario replay**: the same synthetic stream is replayed through three isolated policy environments.
+     - **Independent runs**: each policy gets a separate generated stream for a more independent comparison.
+   - Set the scenario seed for reproducibility.
+
+2. **Prepare the policy set**
+   - On first use, the app loads or trains the three saved policies for the selected target.
+   - Saved checkpoints live under `results/checkpoints/shared_demo/`.
+   - The same target-specific checkpoint set is reused across later runs for consistency.
+
+3. **Run the defense simulation**
+   - The benchmark engine reconstructs the underlying MovieLens condition, generates the attack stream, and feeds the same stream (or separate stream in independent mode) into each policy.
+   - Each policy chooses one of three actions: Accept, Downweight, or Block.
+   - The simulator records per-step audit events: profile metadata, action chosen, defense weight, reward, and target-item prediction before/after the decision.
+
+4. **Compare defense quality**
+   - The app compares each policy against the clean baseline using the same recommendation engine and target item.
+   - Metrics include target prediction shift, target hit-ratio loss, test RMSE, catalog coverage, and action distribution for genuine vs. attack profiles.
+   - The run result is not just a single table; it includes per-profile audit history, per-policy summaries, and scenario metadata.
+
+5. **Inspect the record and saved run outputs**
+   - Each execution is stored as a separate benchmark record in the UI results directory.
+   - Historically, the app previously showed stale or duplicate entries; the current pipeline keeps run history tied to the active simulation and only appends a new result after the **Run defense simulation** button is triggered.
+   - UI-run summaries are saved separately from the core benchmark outputs so benchmark artifacts remain reproducible and clean.
+
+### 6. Changes implemented in the app and benchmark pipeline
+The project was updated to match the intended usage described in the README and to make the benchmark easier to interpret in practice:
+
+- **Shared-scenario semantics clarified**: the app now explicitly explains that identical values in shared replay are expected when all policies receive the same stream and converge to the same defense response.
+- **Independent-run semantics clarified**: this mode generates separate scenario draws, so it is useful for seeing variability between policies rather than assuming a single replayable stream.
+- **Run-history correctness fixed**: each analysis is recorded as a separate run only after clicking **Run defense simulation**; stale or duplicate UI history entries are prevented.
+- **Scenario seed and comparison mode are now part of the benchmark interpretation**: the user can distinguish replay fairness from independent variability without confusion.
+- **Benchmark output is more transparent**: the app’s narrative explains how attack share, stream size, target item, and seed affect the final mitigation outcome.
+- **Policy checkpoint loading was stabilized**: target-specific saved policies are reused when available and retrained only if missing or required.
 
 ---
 

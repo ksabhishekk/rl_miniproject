@@ -297,10 +297,17 @@ def _binary_classification_metrics(
     true_positive = int(np.sum(predicted_positive & actual_positive))
     false_positive = int(np.sum(predicted_positive & ~actual_positive))
     false_negative = int(np.sum(~predicted_positive & actual_positive))
+    true_negative = int(np.sum(~predicted_positive & ~actual_positive))
     precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else 0.0
     recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else 0.0
+    false_positive_rate = false_positive / (false_positive + true_negative) if false_positive + true_negative else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    return {"precision": float(precision), "recall": float(recall), "f1": float(f1)}
+    return {
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "false_positive_rate": float(false_positive_rate),
+    }
 
 
 def run_shared_scenario_comparison(
@@ -312,16 +319,18 @@ def run_shared_scenario_comparison(
     genuine_ratio: float = 0.70,
     target_feature_mode: str = "monitored",
     k_neighbors: int = K_NEIGHBORS,
+    comparison_mode: str = "shared_scenario",
     progress_callback: Optional[Callable[[int, Dict[str, Dict[str, Any]]], None]] = None,
 ) -> Dict[str, Any]:
-    """Run policies in isolated environments over one reproducible scenario.
+    """Run policies in either one shared replayed scenario or independent seeded scenarios.
 
-    Each environment is reset with identical inputs, so the attack profiles and
-    audit ordering match. The policy-specific actions and system feedback evolve
-    independently after the initial state.
+    The default behavior follows the README benchmark design: all policies receive
+    the same generated stream and are evaluated on identical attack ordering.
     """
     if not agents:
         raise ValueError("At least one trained agent is required.")
+    if comparison_mode not in {"shared_scenario", "independent_runs"}:
+        raise ValueError(f"Unsupported comparison mode: {comparison_mode}")
 
     clean_matrix = load_processed_matrix("data/processed/train_matrix.npy")
     test_matrix = load_processed_matrix("data/processed/test_matrix.npy")
@@ -332,18 +341,20 @@ def run_shared_scenario_comparison(
     observations: Dict[str, np.ndarray] = {}
     total_rewards = {name: 0.0 for name in agents}
 
-    # Reset every independent environment with the same seed and options.
-    for agent_name, agent in agents.items():
+    # Reset every environment using the same seed for a shared-scenario replay, or
+    # staggered seeds for independent per-policy runs.
+    for agent_index, (agent_name, agent) in enumerate(agents.items()):
+        env_seed = seed if comparison_mode == "shared_scenario" else seed + agent_index * 997
         env = ShillingDefenseEnv(
             episode_length=episode_length,
             genuine_ratio=genuine_ratio,
             target_items=[target_idx],
             target_feature_mode=target_feature_mode,
             k_neighbors=k_neighbors,
-            seed=seed,
+            seed=env_seed,
         )
         observation, _ = env.reset(
-            seed=seed,
+            seed=env_seed,
             options={"target_item": target_idx, "attack_type": attack_type},
         )
 
@@ -352,13 +363,17 @@ def run_shared_scenario_comparison(
             tuple(env.queue_profile_indices),
             tuple(env.queue_is_attacker),
         )
-        if scenario_reference is None:
-            scenario_reference = scenario
-        elif (
-            not np.array_equal(scenario[0], scenario_reference[0])
-            or scenario[1:] != scenario_reference[1:]
-        ):
-            raise RuntimeError("Agent environments did not receive the same attack scenario and profile stream.")
+        if comparison_mode == "shared_scenario":
+            if scenario_reference is None:
+                scenario_reference = scenario
+            elif (
+                not np.array_equal(scenario[0], scenario_reference[0])
+                or scenario[1:] != scenario_reference[1:]
+            ):
+                raise RuntimeError("Agent environments did not receive the same attack scenario and profile stream.")
+        else:
+            if scenario_reference is None:
+                scenario_reference = scenario
 
         environments[agent_name] = env
         observations[agent_name] = observation
@@ -439,6 +454,7 @@ def run_shared_scenario_comparison(
             "episode_length": int(episode_length),
             "genuine_ratio": float(genuine_ratio),
             "target_feature_mode": target_feature_mode,
+            "comparison_mode": comparison_mode,
             "num_genuine_in_stream": int(sum(not label for label in scenario_reference[2])),
             "num_attackers_in_stream": int(sum(scenario_reference[2])),
             "profile_stream": [

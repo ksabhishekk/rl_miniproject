@@ -78,6 +78,104 @@ ATTACK_LABELS = {
     "average": "Average fillers",
     "bandwagon": "Bandwagon",
 }
+COMPARISON_MODES = {
+    "shared_scenario": {
+        "label": "Shared-scenario replay",
+        "description": (
+            "The same generated stream is replayed through three isolated policy environments. "
+            "This keeps the benchmark fair and makes matching values possible when policies converge."
+        ),
+        "interpretation": (
+            "Same stream replay: identical values are expected when the policies learn the same defensive response to that exact scenario."
+        ),
+        "shared_scenario": True,
+    },
+    "independent_runs": {
+        "label": "Independent runs",
+        "description": (
+            "Each policy gets its own generated scenario, so the comparison reflects separate random draws rather than a single replayed stream."
+        ),
+        "interpretation": (
+            "Independent runs: different random draws help reveal variation between policies, but they are not directly comparable to a single shared replay."
+        ),
+        "shared_scenario": False,
+    },
+}
+
+
+def get_comparison_mode_details(mode: str | None) -> Dict[str, Any]:
+    normalized_mode = mode if mode in COMPARISON_MODES else "shared_scenario"
+    return dict(COMPARISON_MODES[normalized_mode])
+
+
+def calculate_stream_counts(episode_length: int, attack_share_pct: float) -> tuple[int, int]:
+    """Return the integer attack and genuine counts for a stream length and attack share."""
+    episode_length = max(0, int(episode_length))
+    attack_share_pct = max(0.0, min(100.0, float(attack_share_pct)))
+    attack_count = int(round(episode_length * (attack_share_pct / 100.0)))
+    attack_count = max(0, min(episode_length, attack_count))
+    return attack_count, episode_length - attack_count
+
+
+def should_auto_refresh(
+    last_signature: Dict[str, Any] | None,
+    current_signature: Dict[str, Any],
+    agents: Dict[str, Any] | None,
+    loaded_target_idx: int | None,
+    target_idx: int,
+) -> bool:
+    return bool(
+        agents
+        and loaded_target_idx == target_idx
+        and last_signature is not None
+        and last_signature != current_signature
+    )
+
+
+def prepare_demo_agents_for_target(target_idx: int, *, silent: bool = False) -> bool:
+    agents = st.session_state.get("demo_agents")
+    loaded_target_idx = st.session_state.get("loaded_target_idx")
+    if agents and loaded_target_idx == target_idx:
+        return True
+
+    if not manifest:
+        try:
+            with st.spinner("Preparing policies for the selected target..."):
+                agents, trained_manifest = load_or_train_shared_demo_agents(
+                    training_seed=42,
+                    target_idx=target_idx,
+                )
+            st.session_state["demo_agents"] = agents
+            st.session_state["demo_manifest"] = trained_manifest
+            st.session_state["loaded_target_idx"] = target_idx
+            return True
+        except Exception as exc:
+            if not silent:
+                st.error(f"The policy set could not be prepared for the selected target: {exc}")
+            return False
+
+    try:
+        seed = int(manifest.get("training_seed", 42))
+        agents, loaded_manifest = _load_shared_demo_agents(paths, target_idx, seed)
+        st.session_state["demo_agents"] = agents
+        st.session_state["demo_manifest"] = loaded_manifest
+        st.session_state["loaded_target_idx"] = target_idx
+        return True
+    except Exception:
+        try:
+            with st.spinner("Policy set for this target is missing; preparing it automatically..."):
+                agents, trained_manifest = load_or_train_shared_demo_agents(
+                    training_seed=42,
+                    target_idx=target_idx,
+                )
+            st.session_state["demo_agents"] = agents
+            st.session_state["demo_manifest"] = trained_manifest
+            st.session_state["loaded_target_idx"] = target_idx
+            return True
+        except Exception as exc:
+            if not silent:
+                st.error(f"Could not prepare the policy set for the selected target: {exc}")
+            return False
 
 
 @st.cache_resource
@@ -149,6 +247,72 @@ def event_log_table(events: List[Dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def build_profile_history(result: Dict[str, Any]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for policy_name in AGENT_ORDER:
+        for event in result["agents"][policy_name]["events"]:
+            rows.append(
+                {
+                    "Policy": policy_name,
+                    "Step": event["step"],
+                    "Profile ID": event["profile_index"] + 1,
+                    "Is attacker": bool(event["is_attacker"]),
+                    "Source": "Injected" if event["is_attacker"] else "MovieLens",
+                    "Decision": event["action_name"],
+                    "Weight": float(event["defense_weight"]),
+                    "Reward": float(event["reward"]),
+                    "Target before": float(event["target_prediction_before"]),
+                    "Target after": float(event["target_prediction_after"]),
+                    "Target shift": float(event["target_prediction_after"] - event["target_prediction_before"]),
+                    "Ratings": len(event["ratings"]),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def build_run_summary(result: Dict[str, Any], scenario_signature: Dict[str, Any]) -> Dict[str, Any]:
+    summary = {}
+    for policy_name in AGENT_ORDER:
+        metrics = result["agents"][policy_name]
+        summary[policy_name] = {
+            "Total reward": float(metrics["total_reward"]),
+            "Target score shift": float(metrics["target_prediction_shift"]),
+            "Target Hit@10 change (pp)": 100.0 * (
+                metrics["target_hit_ratio_at_10"] - metrics["clean_target_hit_ratio_at_10"]
+            ),
+            "Genuine RMSE change": float(metrics["test_rmse"] - metrics["clean_test_rmse"]),
+            "Catalog coverage change (pp)": 100.0 * (
+                metrics["catalog_coverage"] - metrics["clean_catalog_coverage"]
+            ),
+            "Genuine Hit@10 change (pp)": 100.0 * (
+                metrics["genuine_hit_rate_at_10"] - metrics["clean_genuine_hit_rate_at_10"]
+            ),
+            "Attack blocked": float(metrics["strict_block_metrics"]["recall"])
+            * float(result["scenario"]["num_attackers_in_stream"]),
+            "Injected profiles": float(result["scenario"]["num_attackers_in_stream"]),
+            "False positives": float(metrics["strict_block_metrics"]["false_positive_rate"])
+            * float(result["scenario"]["num_genuine_in_stream"]),
+        }
+    return {
+        "scenario": scenario_signature,
+        "summary": summary,
+    }
+
+
+def append_run_history(result: Dict[str, Any], scenario_signature: Dict[str, Any]) -> Dict[str, Any]:
+    """Store a single successful run only once per actual button-triggered execution."""
+    history = st.session_state.setdefault("run_history", [])
+    next_run_id = int(st.session_state.get("run_id_counter", 0)) + 1
+    st.session_state["run_id_counter"] = next_run_id
+
+    run_record = build_run_summary(result, scenario_signature)
+    run_record["run_id"] = next_run_id
+    run_record["timestamp"] = pd.Timestamp.now(tz="UTC").isoformat()
+    history.append(run_record)
+    st.session_state["run_history"] = history[-30:]
+    return run_record
+
+
 train_matrix, _ = get_matrices()
 titles = movie_title_map()
 paths = _shared_demo_checkpoint_paths()
@@ -189,7 +353,7 @@ with st.sidebar:
     episode_length = st.slider(
         "Profiles in audit stream",
         min_value=20,
-        max_value=100,
+        max_value=300,
         value=100,
         step=10,
         help=(
@@ -197,6 +361,16 @@ with st.sidebar:
             "profiles. Example: 20 profiles at 30% attack share gives 6 attacks."
         ),
     )
+    comparison_mode = st.radio(
+        "Comparison mode",
+        options=("shared_scenario", "independent_runs"),
+        format_func=lambda mode: get_comparison_mode_details(mode)["label"],
+        index=0,
+        help="Choose whether all policies are judged on the same generated stream or on separate random scenarios.",
+    )
+    comparison_details = get_comparison_mode_details(comparison_mode)
+    st.caption(comparison_details["description"])
+    st.caption(f"Interpretation: {comparison_details['interpretation']}")
     scenario_seed = st.number_input(
         "Scenario seed",
         min_value=0,
@@ -204,8 +378,8 @@ with st.sidebar:
         value=10042,
         step=1,
         help=(
-            "Reproduces the same generated ratings, sampled genuine users, and "
-            "profile order. All three policies receive this same scenario."
+            "Reproduces the generated ratings, sampled genuine users, and profile order "
+            "for the selected mode."
         ),
     )
     playback_delay = st.slider(
@@ -232,24 +406,14 @@ with st.sidebar:
         )
         if target_idx != trained_target_idx:
             st.caption(
-                "Selected target differs from the training target; this run tests "
-                "how the saved policies transfer."
+                "Selected target differs from the training target; the app will prepare the policy set for the active target automatically."
             )
-        if st.button("Load policies for selected target", use_container_width=True):
-            try:
-                seed = int(manifest.get("training_seed", 42))
-                agents, loaded_manifest = _load_shared_demo_agents(
-                    paths, target_idx, seed
-                )
-                st.session_state["demo_agents"] = agents
-                st.session_state["demo_manifest"] = loaded_manifest
-                st.session_state["loaded_target_idx"] = target_idx
+        if st.button("Load policies for selected target", width="stretch"):
+            if prepare_demo_agents_for_target(target_idx):
                 st.rerun()
-            except Exception as exc:
-                st.error(f"Could not load the saved policies: {exc}")
     else:
         st.warning("No saved policies found.")
-        if st.button("Train and save the three policies", use_container_width=True):
+        if st.button("Train and save the three policies", width="stretch"):
             try:
                 with st.spinner(
                     "Training Q-Learning, DQN, and PPO. First-time training may take several minutes."
@@ -283,12 +447,15 @@ scenario_signature = {
     "attack_share_pct": attack_share_pct,
     "episode_length": episode_length,
     "scenario_seed": int(scenario_seed),
+    "comparison_mode": comparison_mode,
 }
+
+attack_count, genuine_count = calculate_stream_counts(episode_length, attack_share_pct)
 
 overview = st.columns(3)
 overview[0].metric("MovieLens users", f"{train_matrix.shape[0]:,}")
 overview[1].metric("Movie catalog", f"{train_matrix.shape[1]:,}")
-overview[2].metric("Attack profiles in this run", f"{episode_length * attack_share_pct // 100}")
+overview[2].metric("Attack profiles in this run", f"{attack_count}")
 
 profile_col, scenario_col = st.columns([1.1, 0.9], gap="large")
 with profile_col:
@@ -307,18 +474,18 @@ with profile_col:
         f"User {selected_user + 1} · {len(user_table)} known ratings · "
         "inspection only, not the attack target or selected stream user"
     )
-    st.dataframe(user_table.head(10), hide_index=True, use_container_width=True)
+    st.dataframe(user_table.head(10), hide_index=True, width="stretch")
 with scenario_col:
     st.subheader("What this run does")
     st.write(
-        f"The simulator injects **{episode_length * attack_share_pct // 100}** "
+        f"The simulator injects **{attack_count}** "
         f"synthetic {ATTACK_LABELS[attack_type].lower()} profiles targeting "
         f"**{TARGETS[target_idx]}** into a stream of **{episode_length}** profiles."
     )
+    mode_details = get_comparison_mode_details(comparison_mode)
     st.write(
-        f"The remaining **{episode_length - episode_length * attack_share_pct // 100}** "
-        "profiles are genuine MovieLens users. The same stream is replayed through "
-        "three isolated recommender copies."
+        f"The remaining **{genuine_count}** profiles are genuine MovieLens users. "
+        f"{mode_details['description']}"
     )
     st.caption(
         "The policies see profile features, not the simulator's attack/genuine labels. "
@@ -327,15 +494,26 @@ with scenario_col:
 
 agents = st.session_state.get("demo_agents")
 loaded_target_idx = st.session_state.get("loaded_target_idx")
+if not agents or loaded_target_idx != target_idx:
+    with st.spinner("Preparing the active policy set for the selected target so each scenario can run without manual loading..."):
+        prepare_demo_agents_for_target(target_idx, silent=True)
+    agents = st.session_state.get("demo_agents")
+    loaded_target_idx = st.session_state.get("loaded_target_idx")
+
 if agents and loaded_target_idx != target_idx:
-    st.info("Load the saved policies for the selected target before running this scenario.")
+    st.caption("The policy set is being refreshed for the current target before a new simulation starts.")
 
 run_demo = st.button(
     "Run defense simulation",
     disabled=not agents or loaded_target_idx != target_idx,
     type="primary",
-    use_container_width=True,
+    width="stretch",
 )
+
+result = st.session_state.get("last_demo_result")
+last_signature = st.session_state.get("last_demo_signature")
+if result and last_signature != scenario_signature:
+    st.info("Scenario settings changed. Click the run button to execute a new analysis with the updated parameters.")
 
 if run_demo:
     st.markdown("---")
@@ -387,7 +565,7 @@ if run_demo:
             st.dataframe(
                 profile_table.head(8),
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
                 height=260,
             )
 
@@ -433,6 +611,7 @@ if run_demo:
             attack_type=attack_type,
             episode_length=episode_length,
             genuine_ratio=1.0 - attack_share_pct / 100.0,
+            comparison_mode=comparison_mode,
             progress_callback=show_step,
         )
         result["training"] = st.session_state.get("demo_manifest", manifest)
@@ -447,16 +626,13 @@ if run_demo:
             json.dump(result, result_file, indent=2)
         st.session_state["last_demo_result"] = result
         st.session_state["last_demo_signature"] = scenario_signature
-        st.success(f"Audit complete. Detailed events saved to `{result_path}`.")
+        run_record = append_run_history(result, scenario_signature)
+        st.success(
+            f"Audit complete. Detailed events saved to `{result_path}`. "
+            f"Run #{run_record['run_id']} has been recorded in the history."
+        )
     except Exception as exc:
         st.error(f"The audit run failed: {exc}")
-
-
-result = st.session_state.get("last_demo_result")
-last_signature = st.session_state.get("last_demo_signature")
-if result and last_signature != scenario_signature:
-    st.info("Scenario settings changed. Run the simulation to refresh the comparison.")
-    result = None
 
 if result:
     st.markdown("---")
@@ -474,10 +650,10 @@ if result:
         for name in AGENT_ORDER[1:]
     )
     if same_decisions:
+        mode_details = get_comparison_mode_details(comparison_mode)
         st.info(
-            "All three policies made the same decisions on this scenario. "
-            "Matching recommender metrics are expected here; the interface is showing "
-            "the measured result rather than inventing differences."
+            f"All three policies made the same decision sequence on this {mode_details['label'].lower()} benchmark. "
+            f"{mode_details['description']}"
         )
     else:
         disagreements = sum(
@@ -548,52 +724,48 @@ if result:
             st.metric("Genuine blocked (false positives)", row["Genuine blocked"])
             st.metric("Total reward", f"{row['Total reward']:.2f}")
 
-    st.markdown("#### Detection trade-off")
+    st.markdown("#### Comparison charts")
     st.caption(
-        f"Attack recall uses {attack_count} injected profiles; false-positive rate "
-        f"uses {genuine_count} genuine profiles. Lower genuine blocking is better."
+        "These charts show the same run from two angles: how strongly each policy suppresses attacks and how much it preserves genuine-user quality."
     )
-    decision_chart = pd.DataFrame(decision_chart_rows).set_index("Policy")
-    st.bar_chart(
-        decision_chart,
-        x_label="Policy",
-        y_label="Profiles blocked (%)",
-    )
+    comparison = pd.DataFrame(summary_rows).set_index("Policy")
+
+    total_reward_chart = comparison[["Total reward"]].copy()
+    st.bar_chart(total_reward_chart, height=240)
+
+    target_shift_chart = comparison[["Target score shift (stars)"]].copy()
+    st.line_chart(target_shift_chart, height=240)
+
+    if not decision_chart_rows:
+        decision_chart = pd.DataFrame()
+    else:
+        decision_chart = pd.DataFrame(decision_chart_rows).set_index("Policy")
+    if not decision_chart.empty:
+        st.bar_chart(decision_chart[["Injected blocked (%)", "Genuine blocked (%)"]], height=240)
 
     st.markdown("#### Recommendation impact vs clean baseline")
     st.caption(
-        "RMSE change is held-out rating error change (lower is better). "
-        "Hit@10 and coverage are percentage-point changes; zero means unchanged."
+        "Lower RMSE is better, and smaller changes in genuine-user quality are preferred when attack suppression is strong."
     )
-    comparison = pd.DataFrame(summary_rows).set_index("Policy")
-    st.markdown("**Attack impact**")
-    st.dataframe(
-        comparison[
-            ["Target score shift (stars)", "Target Hit@10 change (pp)"]
-        ].style.format(
-            {
-                "Target score shift (stars)": "{:+.4f}",
-                "Target Hit@10 change (pp)": "{:+.2f}",
-            }
-        ),
-        use_container_width=True,
-    )
-    st.markdown("**Genuine-user recommendation quality**")
     st.dataframe(
         comparison[
             [
+                "Target score shift (stars)",
+                "Target Hit@10 change (pp)",
                 "Genuine RMSE change",
                 "Catalog coverage change (pp)",
                 "Genuine Hit@10 change (pp)",
             ]
         ].style.format(
             {
+                "Target score shift (stars)": "{:+.4f}",
+                "Target Hit@10 change (pp)": "{:+.2f}",
                 "Genuine RMSE change": "{:+.5f}",
                 "Catalog coverage change (pp)": "{:+.2f}",
                 "Genuine Hit@10 change (pp)": "{:+.2f}",
             }
         ),
-        use_container_width=True,
+        width="stretch",
     )
     if attack_count and all(
         event["action"] == 2
@@ -606,6 +778,51 @@ if result:
             "recommender's genuine-user accuracy is expected to match its clean baseline."
         )
 
+    profile_history = build_profile_history(result)
+    if not profile_history.empty:
+        st.markdown("#### Profile-by-profile target prediction trace")
+        st.line_chart(
+            profile_history.pivot_table(
+                index="Step",
+                columns="Policy",
+                values="Target after",
+                aggfunc="mean",
+            ),
+            y_label="Target prediction after decision",
+            height=260,
+        )
+        st.dataframe(
+            profile_history.sort_values(["Step", "Policy"], ignore_index=True),
+            width="stretch",
+            height=320,
+        )
+
+    run_history = st.session_state.get("run_history", [])
+    if run_history:
+        run_history_df = pd.DataFrame(
+            [
+                {
+                    "Run": item.get("run_id", idx + 1),
+                    "Scenario seed": item["scenario"]["scenario_seed"],
+                    "Target": TARGETS.get(item["scenario"]["target_idx"], item["scenario"]["target_idx"]),
+                    "Attack type": item["scenario"]["attack_type"],
+                    "Attack share %": item["scenario"]["attack_share_pct"],
+                    "Episode length": item["scenario"]["episode_length"],
+                    "Comparison mode": item["scenario"].get("comparison_mode", "shared_scenario"),
+                    "Q reward": item["summary"]["Q-Learning"]["Total reward"],
+                    "DQN reward": item["summary"]["DQN"]["Total reward"],
+                    "PPO reward": item["summary"]["PPO"]["Total reward"],
+                    "Q target shift": item["summary"]["Q-Learning"]["Target score shift"],
+                    "DQN target shift": item["summary"]["DQN"]["Target score shift"],
+                    "PPO target shift": item["summary"]["PPO"]["Target score shift"],
+                }
+                for idx, item in enumerate(run_history)
+            ]
+        )
+        st.markdown("#### Run history")
+        st.caption("Run history records only successful benchmark executions started by the Run defense simulation button.")
+        st.dataframe(run_history_df, width="stretch", height=260)
+
     with st.expander("Inspect profile decisions and ratings"):
         selected_policy = st.selectbox("Policy", AGENT_ORDER, key="event_policy")
         events = result_agents[selected_policy]["events"]
@@ -616,7 +833,7 @@ if result:
         st.dataframe(
             event_log_table(events),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             height=320,
         )
         selected_step = st.selectbox(
@@ -636,7 +853,7 @@ if result:
             st.dataframe(
                 ratings_table(selected_event["ratings"], titles),
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
                 height=280,
             )
         with right:
